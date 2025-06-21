@@ -175,7 +175,6 @@ function prompt_sizes() {
     return 0
 }
 
-# 修改 partation_by_lvm 调用
 function partation_by_lvm() {
     DISK="$1"
     vg_name="sys"
@@ -213,16 +212,27 @@ function partation_by_lvm() {
     mkfs.ext4 /dev/$vg_name/home
     mkfs.ext4 /dev/$vg_name/opt
 
+
+    echo "Finish to partation and mount"
+}
+
+function mount_partation() {
+    # 列举所有可用磁盘
+    disks=$(lsblk -d -n -p -o NAME,SIZE,TYPE | grep disk | awk '{print $1 " (" $2 ")"}'|$FZF)
+    if [ -z "$disks" ]; then
+        echo "no disk selected"
+        return 1
+    fi
+    DISK=$(echo "$disks" | awk '{print $1}')
+
+    vg_name="sys"
     # 挂载分区
     mount --mkdir /dev/$vg_name/root /mnt
     mount --mkdir ${DISK}1 /mnt/boot
     mount --mkdir /dev/$vg_name/home /mnt/home
     mount --mkdir /dev/$vg_name/opt /mnt/opt
 
-    echo "Finish to partation and mount"
-    ls -lh /mnt
 }
-
 # 01. 磁盘分区
 function disk_partation() {
     echo "Start partation..."
@@ -276,13 +286,17 @@ function system_settings() {
     echo "start to system settings..."
 
     read -s -p "root password: " new_password
+    echo
     read -s -p "root password(confirm): " confirm_password
+    echo
     [[ "$new_password" != "$confirm_password" ]] && echo "invalid password, please re-run the script." && exit 1
 
     ## 添加用户
     read -p "new username: " username
     read -s -p "new password: " user_new_password
+    echo
     read -s -p "new password(confirm): " user_confirm_password
+    echo
 
     [[ "$user_new_password" != "$user_confirm_password" ]] && echo "user[$username],invalid password, please re-run the script." && exit 1
 
@@ -378,6 +392,7 @@ function show_menu_main() {
     menu_item 3 system settings
     menu_item r reboot
     menu_tail
+    menu_item m mount partation
 
     menu_item u Update
     menu_item q Quit
@@ -395,6 +410,8 @@ function start_main(){
             2) install_basic_packages  ;;
             3) system_settings         ;;
             r) reboot                  ;;
+            
+            m) mount_partation         ;;
             u)
                 update_repo
                 exit 0
