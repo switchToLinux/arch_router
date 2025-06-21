@@ -317,74 +317,51 @@ function system_settings() {
     read -p "new hostname: " hostname
     echo "$hostname" > /mnt/etc/hostname
 
-    
-    # 进入 chroot 环境并执行配置工作
-    arch-chroot /mnt <<EOF
-echo "config locale zh_CN.UTF-8"
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
-echo "zh_CN.UTF-8 UTF-8" >> /etc/locale.gen
-echo "zh_CN.GB18030 GB18030" >> /etc/locale.gen
-echo "zh_CN.GBK GBK" >> /etc/locale.gen
-locale-gen
+    # 进入 chroot 环境并执行配置工作（分步执行，变量直接传递）
+    arch-chroot /mnt bash -c "
+        echo 'config locale zh_CN.UTF-8'
+        echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen
+        echo 'zh_CN.UTF-8 UTF-8' >> /etc/locale.gen
+        echo 'zh_CN.GB18030 GB18030' >> /etc/locale.gen
+        echo 'zh_CN.GBK GBK' >> /etc/locale.gen
+        locale-gen
 
-echo "change localtime to Asia/Shanghai"
-#tzselect
-ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+        echo 'change localtime to Asia/Shanghai'
+        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
-# vim /etc/mkinitcpio.conf
-# 增加 lvm2 模块到内核 HOOKS
-# 修改后类似如下
-# HOOKS =(base ... block lvm2 filesystems ...)
-echo "add lvm2 to mkinitcpio.conf"
-sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
+        echo 'add lvm2 to mkinitcpio.conf'
+        sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
 
-echo "generate initramfs"
-mkinitcpio -P
+        echo 'generate initramfs'
+        mkinitcpio -P
 
-#安装 引导程序
-echo "install grub packages"
-pacman -Sy grub-efi-x86_64 efibootmgr os-prober
+        echo 'install grub packages'
+        pacman -Sy --noconfirm grub-efi-x86_64 efibootmgr os-prober
 
-# 在 GRUB_PRELOAD_MODULES 添加 lvm2
-# 修改后如下： GRUB_PRELOAD_MODULES = "part_gpt part_msdos lvm2"
-# vim /etc/default/grub
-echo "add lvm2 to grub"
-sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
+        echo 'add lvm2 to grub'
+        sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
 
-# 使用UEFI安装GRUB(需要在BIOS下关闭UEFI安全启动)
-echo "install grub to EFI"
-grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
+        echo 'install grub to EFI'
+        grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
 
-echo "generate grub.cfg"
-grub-mkconfig -o /boot/grub/grub.cfg
+        echo 'generate grub.cfg'
+        grub-mkconfig -o /boot/grub/grub.cfg
+    "
 
-# 设置 root 密码
-echo "set root password"
-echo "root:$new_password" | chpasswd
+    # 设置 root 密码
+    arch-chroot /mnt bash -c "echo 'root:$new_password' | chpasswd"
 
-# 创建用户并且添加到wheel组
-echo "create user $username"
-useradd --create-home -s /usr/bin/zsh -g users $username
-usermod -aG wheel $username
+    # 创建用户并添加到wheel组
+    arch-chroot /mnt bash -c "useradd --create-home -s /usr/bin/zsh -g users $username"
+    arch-chroot /mnt bash -c "usermod -aG wheel $username"
+    arch-chroot /mnt bash -c "echo '$username:$user_new_password' | chpasswd"
+    arch-chroot /mnt bash -c "echo '$username ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/$username"
 
-# 设置用户密码
-echo "$username:$user_new_password" | chpasswd
+    # 开机自启动服务配置
+    arch-chroot /mnt bash -c "systemctl enable NetworkManager"
+    arch-chroot /mnt bash -c "systemctl enable sshd"
 
-# 添加用户到 sudoers
-echo "add $username to sudoers"
-echo "$username ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/$username
-
-# 开机自启动服务配置#
-echo "enable NetworkManager and sshd"
-systemctl enable NetworkManager
-systemctl enable sshd
-
-# 完成配置#
-echo "finish configuration, exit chroot"
-exit
-
-EOF
-
+    echo "finish configuration."
 
     echo "umount /mnt"
     umount -R /mnt
@@ -394,36 +371,14 @@ EOF
 }
 
 function reinstall_grub() {
-    arch-chroot /mnt <<EOF
-
-# vim /etc/mkinitcpio.conf
-# 增加 lvm2 模块到内核 HOOKS
-# 修改后类似如下
-# HOOKS =(base ... block lvm2 filesystems ...)
-echo "add lvm2 to mkinitcpio.conf"
-sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
-
-echo "generate initramfs"
-mkinitcpio -P
-
-#安装 引导程序
-echo "install grub packages"
-pacman -Sy grub-efi-x86_64 efibootmgr os-prober
-
-# 在 GRUB_PRELOAD_MODULES 添加 lvm2
-# 修改后如下： GRUB_PRELOAD_MODULES = "part_gpt part_msdos lvm2"
-# vim /etc/default/grub
-echo "add lvm2 to grub"
-sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
-
-# 使用UEFI安装GRUB(需要在BIOS下关闭UEFI安全启动)
-echo "install grub to EFI"
-grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
-
-echo "generate grub.cfg"
-grub-mkconfig -o /boot/grub/grub.cfg
-
-EOF
+    arch-chroot /mnt bash -c "
+        sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
+        mkinitcpio -P
+        pacman -Sy --noconfirm grub-efi-x86_64 efibootmgr os-prober
+        sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
+        grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
+        grub-mkconfig -o /boot/grub/grub.cfg
+    "
 
 }
 
@@ -461,6 +416,7 @@ function start_main(){
             r) reboot                  ;;
             
             m) mount_partation         ;;
+            g) reinstall_grub          ;;
             u)
                 update_repo
                 exit 0
