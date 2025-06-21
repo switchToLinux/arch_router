@@ -1,0 +1,775 @@
+#!/bin/bash
+####################################################
+#   Arch Router Tools
+#
+# Author: Awkee
+# HomePage: https://github.com/Awkee
+# License: GPL3
+####################################################
+
+
+# 欢迎和再见提示信息
+WELCOME="^_^ ArchRouter script for single network port"
+SEE_YOU="^_^ Bye!"
+
+# 脚本路径 #
+router_file=$0
+
+####################### PROMPT FUNCTION #######################
+
+CURL="curl -C - "  # 支持断点继续下载
+pac_cmd_ins="pacman -Sy --needed --noconfirm"
+
+#### 默认选项 #####
+default_confirm="no"    # 是否显示提示确认，no-(默认)提示，yes-自动选择yes
+PMT=">>>"
+READ_TIMEOUT=30   # read timeout seconds
+
+# Define Colors
+RED='\e[41m'
+BRB='\e[1;7;31;47m' # Blink Red bold
+NC='\e[0m' # No color
+BG='\e[7m' # Highlighting Background color
+TC='\e[1m' # Highlighting Text color
+
+########### 文字显示颜色输出函数 ######
+function echo_white()  { printf "\033[0;37m$@\033[0m"     ; }
+function echo_whiter() { printf "\033[0;37;7m$@\033[0m"   ; }
+function echo_red()    { printf "\033[0;31m$@\033[0m"     ; }
+function echo_redr()   { printf "\033[0;31;7m$@\033[0m"   ; }
+function echo_green()  { printf "\033[0;32m$@\033[0m"     ; }
+function echo_greenr() { printf "\033[0;32;7m$@\033[0m"   ; }
+function white_line()  { printf "\033[0;37m$@\033[0m\n"   ; }
+function whiter_line() { printf "\033[0;37;7m$@\033[0m\n" ; }
+function red_line()    { printf "\033[0;31;1m$@\033[0m\n" ; }
+function redr_line()   { printf "\033[0;31;7m$@\033[0m\n" ; }
+function green_line()  { printf "\033[0;32;1m$@\033[0m\n" ; }
+function greenr_line() { printf "\033[0;32;7m$@\033[0m\n" ; }
+
+item_index=0        # 记录菜单选项序号
+item_line_count=3   # 每行显示菜单数量
+ILEN=30             # 单个选项长度
+MLEN=$(( (${ILEN}+1) * ${item_line_count}))   # 单行最大长度
+
+function print_feed() {
+    for i in $(seq 1 $item_line_count) ; do
+        printf "+%${ILEN}s" | tr ' ' '-'
+    done
+    printf "+\n"
+}
+
+function menu_line() { echo -en "|  ${BRB} $@ $NC" ; tput hpa $MLEN ; echo "|" ; }
+
+# 居中显示菜单选项
+# 函数： center_line text max_len
+function center_line() {
+  local text="$1"
+  local width="${2:-$MLEN}"  # 默认使用终端宽度
+
+  local plain_text
+  plain_text=$(echo -n "$text" | sed 's/\x1B\[[0-9;]*[JKmsu]//g')
+  local text_len=${#plain_text}
+
+  # 计算左右填充空格
+  local total_padding=$((width - text_len))
+  local left_padding=$((total_padding / 2))
+  local right_padding=$((total_padding - left_padding))
+
+  # 构建输出：| + 左空格 + 文本 + 右空格 + |
+  printf "| %*s${BRB}%s${NC}" "$left_padding" "" "$text" ; tput hpa $width ; printf "|\n"
+}
+
+function menu_head() { print_feed;   center_line "$@" ; print_feed; }
+# 一行可以有 item_line_count 个菜单选项
+function menu_item() { let item_index=$item_index+1 ; n=$1 ; shift ; let rlen="$item_index * ($ILEN + 1)" ; echo -en "|  $BG ${n} $NC $@" ; tput hpa $rlen ; [[ "$item_index" == "$item_line_count" ]] && echo "|" && item_index=0 ; }
+# 输出单行长菜单选项,长度有限制
+function menu_iteml() { n=$1 ; shift ; echo -en "|  $BG ${n} $NC $@" ; tput hpa $MLEN ; echo "|" ; }
+# 用于输入长信息(非菜单选项),不限制结尾长度
+function menu_info() { n=$1 ; shift ; echo -e "|  $BG ${n} $NC $@" ; }
+function menu_tail() { [[ "$item_index" != "0" ]] && echo "|" ; print_feed; item_index=0 ; }
+
+# 日志记录
+function output_msg() { LEVEL="$1" ; shift ; echo -e "$(date +'%Y年%m月%d日%H:%M:%S'):${LEVEL}: $@" ; }
+function loginfo() { output_msg "INFO" $@  ; }
+function logerr()  { output_msg "ERROR" $@ ; }
+
+#### 检测当前终端支持色彩
+function check_term() {
+	# 指定 TERM ，避免对齐问题(已知某些rxvt-unicode终端版本存在对齐问题)
+    if [[ "`tput colors`" -lt "256" ]] ; then
+        export TERM=xterm
+        export COLORTERM=truecolor
+    fi
+    # menu_iteml "TERM终端类型:" "$TERM"
+    # menu_iteml "TERM终端色彩:" "$COLORTERM"
+}
+
+# 基础依赖命令检测与运行环境 #
+function check_basic() {
+    command -v curl >/dev/null || sudo $pac_cmd_ins curl     # 检测 curl 命令
+
+    # 运行环境检测 #
+    [[ "$(id -u)" -ne 0 ]] && echo "请以 root 用户运行此脚本" && exit 1
+    ! grep -q "ID=arch" /etc/os-release && echo "此脚本仅支持 Arch Linux 系统" && exit 1
+
+    check_term
+}
+
+
+################################################################
+# 提示确认函数，如果使用 -y 参数默认为Y确认
+function prompt() {
+    msg="$@"
+    if [ "$default_confirm" != "yes" ] ; then
+        read -t $READ_TIMEOUT -r -n 1 -e  -p "$msg (y/`echo_greenr N`)" str_answer
+        case "$str_answer" in
+            y*|Y*)  echo "已确认" ; return 0 ;;
+            *)      echo "已取消" ; return 1 ;;
+        esac
+    else
+        echo "$msg (已默认选择 Yes)"
+    fi
+    return 0
+}
+
+function service_is_active() { service_name="$1" ; systemctl is-active $service_name && return 0 ; }
+function service_is_enabled() { service_name="$1" ; systemctl is-enabled $service_name && return 0 ; }
+function service_enable_start() { service_name="$1" ; systemctl enable --now $service_name ; systemctl status $service_name ; }
+
+######## FUNC:INSTALL ROUTER ###################
+
+## === CONFIGURATION === ##
+default_iface="enp0s25"
+IFACE=${default_iface}  # 默认网络接口名称
+WAN_IF="ppp0"
+LAN_IP="192.168.50.1"
+LAN_PREFIX=$(echo ${LAN_IP} | cut -d. -f1-3)
+PPPOE_USER=""  # 根据提示输入
+PPPOE_PASS=""  # 根据提示输入
+
+
+## === 模块 1：基础包安装 === ##
+install_packages() {
+  echo "正在安装基础软件包..."
+  pacman -Sy --noconfirm --needed ppp dnsmasq nftables dhcpcd cockpit cockpit-packagekit chrony
+  systemctl enable chronyd.service --now
+}
+
+## === 模块 2：VLAN & 网络配置 === ##
+setup_networkd() {
+  mkdir -p /etc/systemd/network
+
+  # 配置LAN接口
+  cat > /etc/systemd/network/10-lan.network <<EOF
+[Match]
+Name=${IFACE}
+
+[Network]
+Address=${LAN_IP}/24
+
+DHCP=no
+IPv6SendRA=no
+IPv6AcceptRA=no
+
+EOF
+}
+
+## === 模块 3：PPPoE 拨号 === ##
+setup_pppoe() {
+  echo "正在配置 PPPoE 拨号..."
+
+  # 检查是否安装了 ppp 包
+  if ! pacman -Q ppp &>/dev/null; then
+    echo "PPPoE 需要 ppp 包，请先安装。"
+    exit 1
+  fi
+  read -p "请输入 PPPoE 用户名: " PPPOE_USER
+  # 检查输入的用户名是否为空
+  if [ -z "${PPPOE_USER}" ]; then
+    echo "PPPoE 用户名不能为空，请重新输入。"
+    return 1
+  fi
+  # 隐藏输入密码
+  stty -echo
+  read -p "请输入 PPPoE 密码: " PPPOE_PASS
+  stty echo
+  # 检查输入的密码是否为空
+  if [ -z "${PPPOE_PASS}" ]; then
+    echo "PPPoE 密码不能为空，请重新输入。"
+    return 1
+  fi
+
+  echo "PPPoE 用户名: ${PPPOE_USER}"
+  # echo "PPPoE 密码: ${PPPOE_PASS}"
+
+  cat > /etc/ppp/peers/wan <<EOF
+plugin pppoe.so 
+
+# network interface
+${IFACE}
+
+name "${PPPOE_USER}"
+usepeerdns
+noauth
+defaultroute
+replacedefaultroute
+hide-password
+persist
+mtu 1492
++ipv6
+EOF
+
+  echo "${PPPOE_USER} * ${PPPOE_PASS}" > /etc/ppp/pap-secrets
+  chmod 600 /etc/ppp/pap-secrets
+
+  cat > /etc/systemd/system/pppoe@wan.service <<EOF
+[Unit]
+Description=PPPoE on %I
+Wants=network.target
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/pon %I
+ExecStop=/usr/bin/poff %I
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl enable pppoe@wan --now
+}
+
+## === 模块 4：Dnsmasq === ##
+setup_dnsmasq() {
+  echo "正在配置 Dnsmasq..."
+  echo "conf-dir=/etc/dnsmasq.d/,*.conf" > /etc/dnsmasq.conf
+  mkdir /etc/dnsmasq.d/
+  cat > /etc/dnsmasq.d/lan-dns.conf <<EOF
+
+# 关闭 DNS 服务#
+#port=0
+
+# 不使用 /etc/resolv.conf #
+no-resolv
+domain-needed
+bogus-priv
+expand-hosts
+
+# 国内 DNS 服务器
+server=223.5.5.5
+server=114.114.114.114
+server=2402:4e00::
+
+
+EOF
+
+  cat > /etc/dnsmasq.d/lan-dhcp.conf <<EOF
+
+#
+# LAN提供 DHCPv4 服务 #
+#
+interface=${IFACE}
+bind-interfaces
+domain=lan
+dhcp-range=${LAN_PREFIX}.100,${LAN_PREFIX}.200,24h
+dhcp-option=3,${LAN_IP}
+dhcp-option=6,${LAN_IP}
+
+EOF
+
+  # 配置 IPv6 
+  cat > /etc/dnsmasq.d/lan-dhcpv6.conf <<EOF
+
+# IPv6支持 SLAAC #
+# 1. 启用 Router Advertisement 功能
+enable-ra
+
+# 分发 IPv6 地址和 DNS
+dhcp-range=::100,::200,constructor:$IFACE,ra-names,slaac,64,24h
+# dhcp-option=option6:dns-server,[2402:4e00::],[2001:4860:4860::8888]
+
+EOF
+
+  # 生成 静态地址配置
+  cat > /etc/dnsmasq.d/lan-static.conf <<EOF
+# 静态地址分配 #
+#
+# 设备 MAC 地址和静态 IP 地址的映射 #
+# dhcp-host=00:11:22:33:44:55,${LAN_PREFIX}.10
+# dhcp-host=00:11:22:33:44:66,${LAN_PREFIX}.20
+
+EOF
+
+  # 日志记录#
+  cat > /etc/dnsmasq.d/logging.conf <<EOF
+# 日志记录 #
+#
+# 启用 DHCP 日志记录
+log-dhcp
+# 启用 DNS 日志记录
+log-queries
+
+log-facility=/var/log/dnsmasq.log
+
+EOF
+  # 启用 Dnsmasq 服务
+  systemctl enable dnsmasq --now
+}
+
+## === 模块 5：nftables 防火墙 + NAT + 端口转发 === ##
+setup_nftables() {
+  cat > /etc/nftables.conf <<EOF
+#!/usr/bin/nft -f
+
+# 清理旧规则 #
+flush ruleset
+
+# 根据规则划分不同的文件,方便维护管理 #
+
+include "/etc/nftables.d/*.conf"
+
+EOF
+
+  cat > /etc/nftables.d/00-default.conf <<EOF
+#!/usr/bin/nft -f
+
+###############################################
+#  参考 openwrt nft 默认表生成 
+###############################################
+
+flush ruleset
+
+# 定义常量
+define IF_WAN = $WAN_IF
+define IF_LAN = $IFACE
+define LAN_NET = ${LAN_PREFIX}.0/24
+define GATEWAY_IP = ${LAN_PREFIX}.1/32
+
+table inet fw4 {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" accept comment "!fw4: Accept traffic from loopback"
+		ct state vmap { invalid : drop, established : accept, related : accept } comment "!fw4: Handle inbound flows"
+		tcp flags & (fin | syn | rst | ack) == syn jump syn_flood comment "!fw4: Rate limit TCP syn packets"
+		iifname \$IF_LAN jump input_lan comment "!fw4: Handle lan IPv4/IPv6 input traffic"
+		iifname \$IF_WAN jump input_wan comment "!fw4: Handle wan IPv4/IPv6 input traffic"
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state vmap { invalid : drop, established : accept, related : accept } comment "!fw4: Handle forwarded flows"
+		iifname \$IF_LAN jump forward_lan comment "!fw4: Handle lan IPv4/IPv6 forward traffic"
+		iifname \$IF_WAN jump forward_wan comment "!fw4: Handle wan IPv4/IPv6 forward traffic"
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oif "lo" accept comment "!fw4: Accept traffic towards loopback"
+		ct state vmap { invalid : drop, established : accept, related : accept } comment "!fw4: Handle outbound flows"
+		oifname \$IF_LAN jump output_lan comment "!fw4: Handle lan IPv4/IPv6 output traffic"
+		oifname \$IF_WAN jump output_wan comment "!fw4: Handle wan IPv4/IPv6 output traffic"
+	}
+
+	chain prerouting {
+		type filter hook prerouting priority filter; policy accept;
+		iifname \$IF_LAN jump helper_lan comment "!fw4: Handle lan IPv4/IPv6 helper assignment"
+	}
+
+	chain handle_reject {
+		meta l4proto tcp reject with tcp reset comment "!fw4: Reject TCP traffic"
+		reject comment "!fw4: Reject any other traffic"
+	}
+
+	chain syn_flood {
+		limit rate 25/second burst 50 packets return comment "!fw4: Accept SYN packets below rate-limit"
+		drop comment "!fw4: Drop excess packets"
+	}
+
+	chain input_lan {
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, echo-reply } accept
+		icmpv6 type { nd-router-advert, nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+		jump accept_from_lan
+	}
+
+	chain output_lan {
+		jump accept_to_lan
+	}
+
+	chain forward_lan {
+		jump accept_to_wan comment "!fw4: Accept lan to wan forwarding"
+		jump accept_to_lan
+	}
+
+	chain helper_lan {
+	}
+
+	chain accept_from_lan {
+		iifname \$IF_LAN counter packets 2 bytes 151 accept comment "!fw4: accept lan IPv4/IPv6 traffic"
+	}
+
+	chain accept_to_lan {
+		oifname \$IF_LAN counter packets 0 bytes 0 accept comment "!fw4: accept lan IPv4/IPv6 traffic"
+	}
+
+	chain input_wan {
+		meta nfproto ipv4 udp dport 68 counter packets 0 bytes 0 accept comment "!fw4: Allow-DHCP-Renew"
+		icmp type echo-request counter packets 0 bytes 0 accept comment "!fw4: Allow-Ping"
+		meta nfproto ipv4 meta l4proto igmp counter packets 0 bytes 0 accept comment "!fw4: Allow-IGMP"
+		meta nfproto ipv6 udp dport 546 counter packets 0 bytes 0 accept comment "!fw4: Allow-DHCPv6"
+		ip6 saddr fe80::/10 icmpv6 type . icmpv6 code { mld-listener-query . 0, mld-listener-report . 0, mld-listener-done . 0, mld2-listener-report . 0 } counter packets 0 bytes 0 accept comment "!fw4: Allow-MLD"
+		icmpv6 type { destination-unreachable, time-exceeded, echo-request, echo-reply, nd-router-solicit, nd-router-advert } limit rate 1000/second burst 5 packets counter packets 0 bytes 0 accept comment "!fw4: Allow-ICMPv6-Input"
+		icmpv6 type . icmpv6 code { packet-too-big . 0, parameter-problem . 0, nd-neighbor-solicit . 0, nd-neighbor-advert . 0, parameter-problem . 1 } limit rate 1000/second burst 5 packets counter packets 0 bytes 0 accept comment "!fw4: Allow-ICMPv6-Input"
+		jump drop_from_wan
+	}
+
+	chain output_wan {
+		jump accept_to_wan
+	}
+
+	chain forward_wan {
+		icmpv6 type { destination-unreachable, time-exceeded, echo-request, echo-reply } limit rate 1000/second burst 5 packets counter packets 0 bytes 0 accept comment "!fw4: Allow-ICMPv6-Forward"
+		icmpv6 type . icmpv6 code { packet-too-big . 0, parameter-problem . 0, parameter-problem . 1 } limit rate 1000/second burst 5 packets counter packets 0 bytes 0 accept comment "!fw4: Allow-ICMPv6-Forward"
+		meta l4proto esp counter packets 0 bytes 0 jump accept_to_lan comment "!fw4: Allow-IPSec-ESP"
+		udp dport 500 counter packets 0 bytes 0 jump accept_to_lan comment "!fw4: Allow-ISAKMP"
+		jump drop_to_wan
+	}
+
+	chain accept_to_wan {
+		oifname \$IF_WAN counter packets 417 bytes 34964 accept comment "!fw4: accept wan IPv4/IPv6 traffic"
+	}
+
+	chain drop_from_wan {
+		iifname \$IF_WAN counter packets 0 bytes 0 drop comment "!fw4: drop wan IPv4/IPv6 traffic"
+	}
+
+	chain drop_to_wan {
+		oifname \$IF_WAN counter packets 0 bytes 0 drop comment "!fw4: drop wan IPv4/IPv6 traffic"
+	}
+
+	chain input_guest {
+		jump drop_from_guest
+	}
+
+	chain output_guest {
+		jump accept_to_guest
+	}
+
+	chain forward_guest {
+		jump drop_to_guest
+	}
+
+	chain helper_guest {
+	}
+
+	chain accept_to_guest {
+	}
+
+	chain drop_from_guest {
+	}
+
+	chain drop_to_guest {
+	}
+
+	chain dstnat {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+
+	chain srcnat {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname \$IF_WAN jump srcnat_wan comment "!fw4: Handle wan IPv4/IPv6 srcnat traffic"
+	}
+
+	chain srcnat_wan {
+		meta nfproto ipv4 masquerade comment "!fw4: Masquerade IPv4 wan traffic"
+	}
+
+	chain raw_prerouting {
+		type filter hook prerouting priority raw; policy accept;
+	}
+
+	chain raw_output {
+		type filter hook output priority raw; policy accept;
+	}
+
+	chain mangle_prerouting {
+		type filter hook prerouting priority mangle; policy accept;
+	}
+
+	chain mangle_postrouting {
+		type filter hook postrouting priority mangle; policy accept;
+		oifname \$IF_WAN tcp flags & (fin | syn | rst) == syn tcp option maxseg size set rt mtu comment "!fw4: Zone wan IPv4/IPv6 egress MTU fixing"
+	}
+
+	chain mangle_input {
+		type filter hook input priority mangle; policy accept;
+	}
+
+	chain mangle_output {
+		type route hook output priority mangle; policy accept;
+	}
+
+	chain mangle_forward {
+		type filter hook forward priority mangle; policy accept;
+		iifname \$IF_WAN tcp flags & (fin | syn | rst) == syn tcp option maxseg size set rt mtu comment "!fw4: Zone wan IPv4/IPv6 ingress MTU fixing"
+	}
+}
+
+EOF
+
+  systemctl enable nftables --now
+}
+
+## === 模块 6：系统内核转发 === ##
+setup_sysctl() {
+  # echo -e "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/99-forwarding.conf
+  cat > /etc/sysctl.d/99-router.conf <<EOF
+
+# 网络转发设置
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
+# 实现 TPROXY（透明代理）功能时是必不可少的#
+net.ipv4.conf.lo.route_localnet = 1
+
+# 增强 TCP/IP 安全性
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# TCP SYN cookies 防护 SYN 洪水攻击
+net.ipv4.tcp_syncookies = 1
+
+# 限制 ICMP 速率以防止 ICMP 洪水攻击
+net.ipv4.icmp_ratelimit = 100
+
+# 调整 ARP 表大小以处理大量连接
+net.ipv4.neigh.default.gc_thresh1 = 1024
+net.ipv4.neigh.default.gc_thresh2 = 4096
+net.ipv4.neigh.default.gc_thresh3 = 8192
+
+# IPv6 安全设置
+net.ipv6.conf.all.accept_ra = 0
+net.ipv6.conf.default.accept_ra = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# 优化网络性能
+net.core.netdev_max_backlog = 2500
+net.core.somaxconn = 4096
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+
+
+EOF
+
+  sysctl --system
+}
+
+## === 模块 7：Cockpit Web UI === ##
+setup_dhcpcd() {
+  echo "正在配置 dhcpcd 服务..."
+
+  # 配置 dhcpcd
+  [[ -f /etc/dhcpcd.conf ]] && cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak
+
+  cat > /etc/dhcpcd.conf <<EOF
+
+duid
+persistent
+vendorclassid
+option domain_name_servers, domain_name, domain_search
+option classless_static_routes
+option interface_mtu
+option host_name
+require dhcp_server_identifier
+slaac private
+noipv4ll
+
+waitip 6
+ipv6only
+
+nohook resolv.conf
+
+# PPPoE 接口从 ISP 申请 IPv6 地址和前缀
+interface $WAN_IF
+    ipv6rs
+    ia_na 1
+    ia_pd 1 ${IFACE}/0
+
+# 内网接口使用从 PPPoE 获得的 IPv6 地址
+
+interface ${IFACE}
+    noipv6rs           # 不去收 RA
+    noia_na            # 不请求地址
+    nohook slaac       # 不用 SLAAC 自动生成地址
+
+EOF
+  systemctl enable dhcpcd --now
+  echo "dhcpcd 服务已配置并启用。"
+}
+
+# 安装 Arch Router #
+function do_install_archrouter() {
+    if ! prompt "是否安装 Arch Router ?" ; then
+        loginfo "安装已取消."
+        return 1
+    fi
+    ###############################################
+    # 参数动态设置 #
+    ###############################################
+    # 设置IFACE
+    echo "当前可用的网络设备名称如下："
+    ip link show | awk -F': ' '/^[0-9]+: / {print $2}' | grep -v lo
+    read -p "请输入要设置的网络设备名称 (默认: ${default_iface}): " input_iface
+
+    IFACE=${input_iface:-${default_iface}}
+    loginfo "已设置网络设备名称为: ${IFACE}"
+    loginfo "当前 LAN IP 地址为: ${LAN_IP}"
+    loginfo "开始安装 Arch Router..."
+    prompt "[1/7] 安装基础软件包..."        && install_packages
+    prompt "[2/7] 配置 LAN 网络..."        && setup_networkd
+    prompt "[3/7] 设置 PPPoE 拨号..."      && setup_pppoe
+    prompt "[4/7] 启用 Dnsmasq..."         && setup_dnsmasq
+    prompt "[5/7] 配置 nftables 防火墙..."  && setup_nftables
+    prompt "[6/7] 启用内核转发..."          && setup_sysctl
+    prompt "[7/7] 启用Dhcpcd服务..."        && setup_dhcpcd
+    loginfo "✅ 部署完成！请接入 LAN 口测试上网与后台管理功能。"
+
+    return 0
+}
+
+######## FUNC:MANAGER ###################
+
+# 1. PPPoE拨号
+function pppoe_start() {
+    echo "1.Starting network..."
+    systemctl restart systemd-networkd
+    echo "2.Starting PPPoE..."
+    systemctl start pppoe@wan
+    echo "PPPoE started."
+    # 需要检测 $WAN_IF 网卡正常获取公网IP才可以
+    # 循环检测7次，每次间隔1秒
+    i=0
+    while [ $i -lt 7 ]; do
+        ip a s | grep $WAN_IF  &> /dev/null
+        if [ $? -eq 0 ]; then
+            echo "PPPoE connected."
+            break
+        fi
+        echo "Waiting for PPPoE connection..."
+        sleep 1
+        i=$((i+1))
+    done
+    # 检测公网IP是否正常获取
+    ip a s | grep $WAN_IF | grep "scope global"
+    if [ $? -eq 0 ]; then
+        echo "PPPoE connected."
+    else
+        echo "PPPoE connection failed."
+        exit 1
+    fi
+    systemctl start dnsmasq
+    systemctl start nftables
+}
+
+
+function pppoe_stop() {
+    echo "Stopping PPPoE..."
+    systemctl stop pppoe@wan
+    systemctl stop dnsmasq
+    systemctl stop nftables
+    echo "PPPoE stopped."
+}
+
+function pppoe_restart() {
+    echo "Restarting PPPoE..."
+    pppoe_stop
+    sleep 1
+    pppoe_start
+    echo "PPPoE restarted."
+}
+
+
+
+
+
+
+
+######## MENU:MAIN ######################
+
+function update_repo() {
+    loginfo "start to update repo..."
+    url_addr=https://pushx.link/s/arouter
+    tmp_file=/tmp/arouter.sh
+
+    $CURL "$url_addr" -O $tmp_file
+    if [[ $? -ne 0 ]]; then
+        logerr "update failed!"
+        return 1
+    fi
+
+    mv $router_file $router_file.bak
+    mv $tmp_file $router_file
+    chmod +x $router_file
+    loginfo "$(basename $router_file) is updated! "
+}
+
+# 主菜单显示 #
+function show_menu_main() {
+    menu_head "$WELCOME"
+    menu_item 0 install arch router
+    menu_item 1 start router
+    menu_item 2 stop  router
+    menu_item 3 restart router
+    menu_tail
+
+    menu_item u Update
+    menu_item q Quit
+    menu_tail
+}
+
+function start_main(){
+    while true
+    do
+        show_menu_main
+        read -r -n 1 -e  -p "`echo_greenr 请选择:`${PMT} " str_answer
+        case "$str_answer" in
+            0) do_install_archrouter   ;;  # 终端命令安装
+            1) pppoe_start             ;;  # 启动 PPPoE 服务
+            2) pppoe_stop              ;;  # 停止 PPPoE 服务
+            3) pppoe_restart           ;;  # 重启 PPPoE 服务
+            u)
+                update_repo
+                exit 0
+            ;;
+            q|"") return 0         ;;  # 返回上级菜单
+            *) redr_line "No such choice[$str_answer]" ;;
+        esac
+    done
+}
+
+
+
+### MAIN:PROCESS ####
+
+check_basic
+
+# 主菜单
+start_main
+
+# 再见信息
+echo
+print_feed
+center_line "$SEE_YOU"
+print_feed

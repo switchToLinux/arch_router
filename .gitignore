@@ -1,0 +1,8 @@
+*.sh
+demos/
+cores/
+*.new
+*.bak
+*.example
+*.[0-9]
+etc/ppp/resolv.conf

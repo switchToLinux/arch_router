@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# Arch Linux Installer
+# Author: Awkee
+# Created: 06/21/2025
+# License: GPL3
+##################################################
+
+
+
+# 欢迎和再见提示信息
+WELCOME="^_^ ArchRouter单网口软路由脚本"
+SEE_YOU="^_^ Bye!"
+
+# 脚本路径 #
+router_file=$0
+
+####################### PROMPT FUNCTION #######################
+
+CURL="curl -C - "  # 支持断点继续下载
+pac_cmd_ins="pacman -Sy --needed --noconfirm"
+FZF="fzf --height 40% --reverse --border --no-info --inline-info --prompt >>> "
+
+#### 默认选项 #####
+default_confirm="no"    # 是否显示提示确认，no-(默认)提示，yes-自动选择yes
+PMT=">>>"
+READ_TIMEOUT=30   # read timeout seconds
+
+# Define Colors
+RED='\e[41m'
+BRB='\e[1;7;31;47m' # Blink Red bold
+NC='\e[0m' # No color
+BG='\e[7m' # Highlighting Background color
+TC='\e[1m' # Highlighting Text color
+
+########### 文字显示颜色输出函数 ######
+function echo_white()  { printf "\033[0;37m$@\033[0m"     ; }
+function echo_whiter() { printf "\033[0;37;7m$@\033[0m"   ; }
+function echo_red()    { printf "\033[0;31m$@\033[0m"     ; }
+function echo_redr()   { printf "\033[0;31;7m$@\033[0m"   ; }
+function echo_green()  { printf "\033[0;32m$@\033[0m"     ; }
+function echo_greenr() { printf "\033[0;32;7m$@\033[0m"   ; }
+function white_line()  { printf "\033[0;37m$@\033[0m\n"   ; }
+function whiter_line() { printf "\033[0;37;7m$@\033[0m\n" ; }
+function red_line()    { printf "\033[0;31;1m$@\033[0m\n" ; }
+function redr_line()   { printf "\033[0;31;7m$@\033[0m\n" ; }
+function green_line()  { printf "\033[0;32;1m$@\033[0m\n" ; }
+function greenr_line() { printf "\033[0;32;7m$@\033[0m\n" ; }
+
+item_index=0        # 记录菜单选项序号
+item_line_count=3   # 每行显示菜单数量
+ILEN=30             # 单个选项长度
+MLEN=$(( (${ILEN}+1) * ${item_line_count}))   # 单行最大长度
+
+function print_feed() {
+    for i in $(seq 1 $item_line_count) ; do
+        printf "+%${ILEN}s" | tr ' ' '-'
+    done
+    printf "+\n"
+}
+
+function menu_line() { echo -en "|  ${BRB} $@ $NC" ; tput hpa $MLEN ; echo "|" ; }
+
+# 居中显示菜单选项
+# 函数： center_line text max_len
+function center_line() {
+  local text="$1"
+  local width="${2:-$MLEN}"  # 默认使用终端宽度
+
+  local plain_text
+  plain_text=$(echo -n "$text" | sed 's/\x1B\[[0-9;]*[JKmsu]//g')
+  local text_len=${#plain_text}
+
+  # 计算左右填充空格
+  local total_padding=$((width - text_len))
+  local left_padding=$((total_padding / 2))
+  local right_padding=$((total_padding - left_padding))
+
+  # 构建输出：| + 左空格 + 文本 + 右空格 + |
+  printf "| %*s${BRB}%s${NC}" "$left_padding" "" "$text" ; tput hpa $width ; printf "|\n"
+}
+
+function menu_head() { print_feed;   center_line "$@" ; print_feed; }
+# 一行可以有 item_line_count 个菜单选项
+function menu_item() { let item_index=$item_index+1 ; n=$1 ; shift ; let rlen="$item_index * ($ILEN + 1)" ; echo -en "|  $BG ${n} $NC $@" ; tput hpa $rlen ; [[ "$item_index" == "$item_line_count" ]] && echo "|" && item_index=0 ; }
+# 输出单行长菜单选项,长度有限制
+function menu_iteml() { n=$1 ; shift ; echo -en "|  $BG ${n} $NC $@" ; tput hpa $MLEN ; echo "|" ; }
+# 用于输入长信息(非菜单选项),不限制结尾长度
+function menu_info() { n=$1 ; shift ; echo -e "|  $BG ${n} $NC $@" ; }
+function menu_tail() { [[ "$item_index" != "0" ]] && echo "|" ; print_feed; item_index=0 ; }
+
+# 日志记录
+function output_msg() { LEVEL="$1" ; shift ; echo -e "$(date +'%Y年%m月%d日%H:%M:%S'):${LEVEL}: $@" ; }
+function loginfo() { output_msg "INFO" $@  ; }
+function logerr()  { output_msg "ERROR" $@ ; }
+
+#### 检测当前终端支持色彩
+function check_term() {
+	# 指定 TERM ，避免对齐问题(已知某些rxvt-unicode终端版本存在对齐问题)
+    if [[ "`tput colors`" -lt "256" ]] ; then
+        export TERM=xterm
+        export COLORTERM=truecolor
+    fi
+    # menu_iteml "TERM终端类型:" "$TERM"
+    # menu_iteml "TERM终端色彩:" "$COLORTERM"
+}
+
+# 基础依赖命令检测与运行环境 #
+function check_basic() {
+    command -v curl &>/dev/null || sudo $pac_cmd_ins curl
+    command -v fzf  &>/dev/null || sudo $pac_cmd_ins fzf
+
+    # 运行环境检测 #
+    [[ "$(id -u)" -ne 0 ]] && echo "Please run this script by root user!" && exit 1
+
+    check_term
+}
+
+
+################################################################
+# 提示确认函数，如果使用 -y 参数默认为Y确认
+function prompt() {
+    msg="$@"
+    if [ "$default_confirm" != "yes" ] ; then
+        read -t $READ_TIMEOUT -r -n 1 -e  -p "$msg (y/`echo_greenr N`)" str_answer
+        case "$str_answer" in
+            y*|Y*)  echo "confirmed" ; return 0 ;;
+            *)      echo "canceled" ; return 1 ;;
+        esac
+    fi
+    return 0
+}
+
+######## FUNC:INSTALL ARCHER ###################
+
+# 检查磁盘空间并交互设置分区大小
+function prompt_sizes() {
+    local disk="$1"
+    # 获取磁盘总空间（单位：GB）
+    local total_size_gb=$(lsblk -b -dn -o SIZE "$disk" | awk '{printf "%.0f", $1/1024/1024/1024}')
+    echo "Disk: $disk , Total size: ${total_size_gb}G"
+
+    # 预留1G给EFI，剩余空间用于LVM
+    local total_gb=$((total_size_gb - 1))
+    if [ "$total_gb" -le 0 ]; then
+        echo "No more free space!"
+        return 1
+    fi
+    echo "Disk free space: ${total_gb}G"
+
+    # 默认分区建议
+    local default_root=30
+    local default_home=20
+    local default_opt=20
+
+    # 交互输入分区大小
+    read -p "set /(root) size(GB, default:${default_root}): " root_size
+    root_size=${root_size:-$default_root}
+    read -p "set /home size(GB, default:${default_home}): " home_size
+    home_size=${home_size:-$default_home}
+    read -p "set /opt size(GB, default:${default_opt}): " opt_size
+    opt_size=${opt_size:-$default_opt}
+
+    # 校验总和
+    local sum_size=$((root_size + home_size + opt_size))
+    if [ "$sum_size" -gt "$total_gb" ]; then
+        echo "Total size is not enough to use! total:[${total_gb}G], sum_size:[$sum_size]!"
+        return 1
+    fi
+
+    # 导出变量供后续分区函数使用
+    export DISK_ROOT_SIZE="${root_size}G"
+    export DISK_HOME_SIZE="${home_size}G"
+    export DISK_OPT_SIZE="${opt_size}G"
+    echo "partation: root=${DISK_ROOT_SIZE}, home=${DISK_HOME_SIZE}, opt=${DISK_OPT_SIZE}"
+    return 0
+}
+
+# 修改 partation_by_lvm 调用
+function partation_by_lvm() {
+    DISK="$1"
+    vg_name="sys"
+    echo "Start partation by LVM: $DISK"
+
+    # 创建新的 GPT 分区表
+    parted -s $DISK mklabel gpt
+
+    # 创建 EFI 分区 (1GB)
+    parted -s $DISK mkpart ESP fat32 1MiB 1025MiB
+    parted -s $DISK set 1 esp on
+
+    # 创建 LVM 物理分区 (剩余空间)
+    parted -s $DISK mkpart primary ext4 1025MiB 100%
+
+    # 格式化 EFI 分区
+    mkfs.fat -F32 ${DISK}1
+
+    # 标记 LVM 分区
+    pvcreate ${DISK}2
+
+    # 创建卷组
+    vgcreate $vg_name ${DISK}2
+
+    # 检查磁盘空间大小,根据提示设置分区的空间大小,
+    prompt_sizes "$DISK" || return 1
+
+    # 创建逻辑卷
+    lvcreate -L "$DISK_ROOT_SIZE" -n root $vg_name
+    lvcreate -L "$DISK_HOME_SIZE" -n home $vg_name
+    lvcreate -L "$DISK_OPT_SIZE" -n opt $vg_name
+
+    # 格式化逻辑卷
+    mkfs.ext4 /dev/$vg_name/root
+    mkfs.ext4 /dev/$vg_name/home
+    mkfs.ext4 /dev/$vg_name/opt
+
+    # 挂载分区
+    mount --mkdir /dev/$vg_name/root /mnt
+    mount --mkdir ${DISK}1 /mnt/boot
+    mount --mkdir /dev/$vg_name/home /mnt/home
+    mount --mkdir /dev/$vg_name/opt /mnt/opt
+
+    echo "Finish to partation and mount"
+    ls -lh /mnt
+}
+
+# 01. 磁盘分区
+function disk_partation() {
+    echo "Start partation..."
+    # 列举所有可用磁盘
+    disks=$(lsblk -d -n -p -o NAME,SIZE,TYPE | grep disk | awk '{print $1 " (" $2 ")"}'|$FZF)
+    if [ -z "$disks" ]; then
+        echo "no disk selected"
+        return 1
+    fi
+    DISK=$(echo "$disks" | awk '{print $1}')
+
+    read -p "Ready to partation: $DISK (y/N): " confirm
+    if [ "$confirm" != "Y" ] && [ "$confirm" != "y" ]; then
+        exit 1
+    fi
+
+    partation_by_lvm  $DISK
+    if [ $? -ne 0 ]; then
+        echo "Disk partation is failed!"
+        return 1
+    fi
+    echo "generating fstab..."
+    genfstab -U -p /mnt >> /mnt/etc/fstab
+    echo "Disk partation is done."
+}
+
+# 02. 基础安装 # 安装环境准备 #
+function install_basic_packages() {
+    # 安装基础软件包
+    echo "installing base packages..."
+    prompt "change mirror to tsinghua mirror?"
+    if [ "$?" == "0" ] ; then
+        # 更换软件源国内清华源
+        echo "updating mirrorlist..."
+        pacman -Sy pacman-mirrorlist --noconfirm
+
+        if grep 'tsinghua' /etc/pacman.d/mirrorlist; then
+            echo "mirrorlist already updated."
+        else
+            cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak
+            echo 'Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+        fi
+    fi
+    pacman -Syy
+    pacstrap -K /mnt base linux linux-firmware linux-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
+}
+
+# 03. 系统设置 #
+function system_settings() {
+    echo "start to system settings..."
+
+    read -s -p "root password: " new_password
+    read -s -p "root password(confirm): " confirm_password
+    [[ "$new_password" != "$confirm_password" ]] && echo "invalid password, please re-run the script." && exit 1
+
+    ## 添加用户
+    read -p "new username: " username
+    read -s -p "new password: " user_new_password
+    read -s -p "new password(confirm): " user_confirm_password
+
+    [[ "$user_new_password" != "$user_confirm_password" ]] && echo "user[$username],invalid password, please re-run the script." && exit 1
+
+    read -p "new hostname: " hostname
+    echo "$hostname" > /mnt/etc/hostname
+
+    
+    # 进入 chroot 环境并执行配置工作
+    arch-chroot /mnt <<EOF
+echo "config locale zh_CN.UTF-8"
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+echo "zh_CN.UTF-8 UTF-8" >> /etc/locale.gen
+echo "zh_CN.GB18030 GB18030" >> /etc/locale.gen
+echo "zh_CN.GBK GBK" >> /etc/locale.gen
+locale-gen
+
+echo "change localtime to Asia/Shanghai"
+#tzselect
+ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+
+# vim /etc/mkinitcpio.conf
+# 增加 lvm2 模块到内核 HOOKS
+# 修改后类似如下
+# HOOKS =(base ... block lvm2 filesystems ...)
+echo "add lvm2 to mkinitcpio.conf"
+sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
+
+echo "generate initramfs"
+mkinitcpio -P
+
+#安装 引导程序
+echo "install grub packages"
+pacman -Sy grub-efi-x86_64 efibootmgr os-prober
+
+# 在 GRUB_PRELOAD_MODULES 添加 lvm2
+# 修改后如下： GRUB_PRELOAD_MODULES = "part_gpt part_msdos lvm2"
+# vim /etc/default/grub
+echo "add lvm2 to grub"
+sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
+
+# 使用UEFI安装GRUB(需要在BIOS下关闭UEFI安全启动)
+echo "install grub to EFI"
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
+
+echo "generate grub.cfg"
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# 设置 root 密码
+echo "set root password"
+echo "root:$new_password" | chpasswd
+
+# 创建用户并且添加到wheel组
+echo "create user $username"
+useradd --create-home -s /usr/bin/zsh -g users $username
+usermod -aG wheel $username
+
+# 设置用户密码
+echo "$username:$user_new_password" | chpasswd
+
+# 添加用户到 sudoers
+echo "add $username to sudoers"
+echo "$username ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/$username
+
+# 开机自启动服务配置#
+echo "enable NetworkManager and sshd"
+systemctl enable NetworkManager
+systemctl enable sshd
+
+# 完成配置#
+echo "finish configuration, exit chroot"
+exit
+
+EOF
+
+
+    echo "umount /mnt"
+    umount -R /mnt
+
+    echo "Now you can reboot your system."
+
+}
+
+
+######## MAIN:PROCESS ###################
+
+
+# 主菜单显示 #
+function show_menu_main() {
+    menu_head "$WELCOME"
+    menu_item 0 auto install arch linux
+    menu_item 1 disk partations
+    menu_item 2 basic install
+    menu_item 3 system settings
+    menu_item r reboot
+    menu_tail
+
+    menu_item u Update
+    menu_item q Quit
+    menu_tail
+}
+
+function start_main(){
+    while true
+    do
+        show_menu_main
+        read -r -n 1 -e  -p "`echo_greenr`${PMT} " str_answer
+        case "$str_answer" in
+            0) auto_install_arch       ;;
+            1) disk_partation          ;;
+            2) install_basic_packages  ;;
+            3) system_settings         ;;
+            r) reboot                  ;;
+            u)
+                update_repo
+                exit 0
+            ;;
+            q|"") return 0         ;;  # 返回上级菜单
+            *) redr_line "no such choice [$str_answer]!" ;;
+        esac
+    done
+}
+
+
+
+### MAIN:PROCESS ####
+
+check_basic
+
+# 主菜单
+start_main
+
+# 再见信息
+echo
+print_feed
+center_line "$SEE_YOU"
+print_feed
+
