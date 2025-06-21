@@ -244,8 +244,6 @@ function disk_partation() {
         echo "Disk partation is failed!"
         return 1
     fi
-    echo "generating fstab..."
-    genfstab -U -p /mnt >> /mnt/etc/fstab
     echo "Disk partation is done."
 }
 
@@ -268,6 +266,9 @@ function install_basic_packages() {
     fi
     pacman -Syy
     pacstrap -K /mnt base linux linux-firmware linux-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
+
+    echo "generating fstab..."
+    genfstab -U -p /mnt >> /mnt/etc/fstab
 }
 
 # 03. 系统设置 #
