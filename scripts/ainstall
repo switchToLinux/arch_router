@@ -8,7 +8,7 @@
 
 
 # 欢迎和再见提示信息
-WELCOME="^_^ ArchRouter单网口软路由脚本"
+WELCOME="^_^ Arch linux toolbox"
 SEE_YOU="^_^ Bye!"
 
 # 脚本路径 #
@@ -113,6 +113,14 @@ function check_basic() {
     [[ "$(id -u)" -ne 0 ]] && echo "Please run this script by root user!" && exit 1
 
     check_term
+
+    if [ -d /sys/firmware/efi ]; then
+        echo "BOOT mode: UEFI"
+    else
+        echo "BOOT mode: Legacy"
+        echo "Please set BIOS to boot from UEFI mode"
+        exit 1
+    fi
 }
 
 
@@ -317,7 +325,6 @@ function system_settings() {
     read -p "new hostname: " hostname
     echo "$hostname" > /mnt/etc/hostname
 
-    # 进入 chroot 环境并执行配置工作（分步执行，变量直接传递）
     arch-chroot /mnt bash -c "
         echo 'config locale zh_CN.UTF-8'
         echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen
@@ -328,7 +335,8 @@ function system_settings() {
 
         echo 'change localtime to Asia/Shanghai'
         ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-
+    "
+    arch-chroot /mnt bash -c "
         echo 'add lvm2 to mkinitcpio.conf'
         sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
 
@@ -370,18 +378,23 @@ function system_settings() {
 
 }
 
+
 function reinstall_grub() {
-    arch-chroot /mnt bash -c "
-        sed -i 's/block filesystems/block lvm2 filesystems/g' /etc/mkinitcpio.conf
-        mkinitcpio -P
-        pacman -Sy --noconfirm grub-efi-x86_64 efibootmgr os-prober
-        sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
-        grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
-        grub-mkconfig -o /boot/grub/grub.cfg
-    "
+    # 自动检测UEFI或BIOS启动，并选择合适的GRUB安装方式
+    # 自动检测已挂载的磁盘（假设/boot/efi或/boot已挂载，或用上次分区的DISK变量）
 
+    if [ -d /sys/firmware/efi ]; then
+        echo "UEFI mode:"
+        arch-chroot /mnt bash -c "
+            pacman -Sy --noconfirm grub-efi-x86_64 efibootmgr os-prober
+            sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
+            grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
+            grub-mkconfig -o /boot/grub/grub.cfg
+        "
+    else
+        echo "please set BIOS to boot from UEFI mode!"
+    fi
 }
-
 ######## MAIN:PROCESS ###################
 
 
@@ -392,10 +405,10 @@ function show_menu_main() {
     menu_item 1 disk partations
     menu_item 2 basic install
     menu_item 3 system settings
-    menu_item r reboot
     menu_tail
-    menu_item g grub2 reinstall
+    menu_item r reboot system
     menu_item m mount partation
+    menu_item g grub2 reinstall
     menu_tail
 
     menu_item u Update
