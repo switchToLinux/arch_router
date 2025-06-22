@@ -9,8 +9,8 @@
 
 
 # 欢迎和再见提示信息
-WELCOME="^_^ ArchRouter script for single network port"
-SEE_YOU="^_^ Bye!"
+WELCOME="arch router script for single network interface"
+SEE_YOU="Bye!"
 
 # 脚本路径 #
 router_file=$0
@@ -109,8 +109,8 @@ function check_basic() {
     command -v curl >/dev/null || sudo $pac_cmd_ins curl     # 检测 curl 命令
 
     # 运行环境检测 #
-    [[ "$(id -u)" -ne 0 ]] && echo "请以 root 用户运行此脚本" && exit 1
-    ! grep -q "ID=arch" /etc/os-release && echo "此脚本仅支持 Arch Linux 系统" && exit 1
+    [[ "$(id -u)" -ne 0 ]] && echo "Please run this script by root user!" && exit 1
+    ! grep -q "ID=arch" /etc/os-release && echo "Sorry! This script only support Arch Linux!" && exit 1
 
     check_term
 }
@@ -123,18 +123,14 @@ function prompt() {
     if [ "$default_confirm" != "yes" ] ; then
         read -t $READ_TIMEOUT -r -n 1 -e  -p "$msg (y/`echo_greenr N`)" str_answer
         case "$str_answer" in
-            y*|Y*)  echo "已确认" ; return 0 ;;
-            *)      echo "已取消" ; return 1 ;;
+            y*|Y*)  echo "Confirmed" ; return 0 ;;
+            *)      echo "Canceled" ; return 1 ;;
         esac
     else
         echo "$msg (已默认选择 Yes)"
     fi
     return 0
 }
-
-function service_is_active() { service_name="$1" ; systemctl is-active $service_name && return 0 ; }
-function service_is_enabled() { service_name="$1" ; systemctl is-enabled $service_name && return 0 ; }
-function service_enable_start() { service_name="$1" ; systemctl enable --now $service_name ; systemctl status $service_name ; }
 
 ######## FUNC:INSTALL ROUTER ###################
 
@@ -151,7 +147,7 @@ PPPOE_PASS=""  # 根据提示输入
 ## === 模块 1：基础包安装 === ##
 install_packages() {
   echo "正在安装基础软件包..."
-  pacman -Sy --noconfirm --needed ppp dnsmasq nftables dhcpcd cockpit cockpit-packagekit chrony
+  pacman -Sy --noconfirm --needed ppp dnsmasq nftables dhcpcd chrony
   systemctl enable chronyd.service --now
 }
 
@@ -176,31 +172,30 @@ EOF
 
 ## === 模块 3：PPPoE 拨号 === ##
 setup_pppoe() {
-  echo "正在配置 PPPoE 拨号..."
+  echo "start to setup PPPoE ..."
 
   # 检查是否安装了 ppp 包
   if ! pacman -Q ppp &>/dev/null; then
-    echo "PPPoE 需要 ppp 包，请先安装。"
+    echo "please install ppp package!"
     exit 1
   fi
-  read -p "请输入 PPPoE 用户名: " PPPOE_USER
+  read -p "PPPoE username: " PPPOE_USER
   # 检查输入的用户名是否为空
   if [ -z "${PPPOE_USER}" ]; then
-    echo "PPPoE 用户名不能为空，请重新输入。"
+    echo "PPPoE username is invalid!"
     return 1
   fi
   # 隐藏输入密码
-  stty -echo
-  read -p "请输入 PPPoE 密码: " PPPOE_PASS
-  stty echo
+  read -s -p "PPPoE Password: " PPPOE_PASS
+  echo
   # 检查输入的密码是否为空
   if [ -z "${PPPOE_PASS}" ]; then
-    echo "PPPoE 密码不能为空，请重新输入。"
+    echo "PPPoE password is invalid!"
     return 1
   fi
 
-  echo "PPPoE 用户名: ${PPPOE_USER}"
-  # echo "PPPoE 密码: ${PPPOE_PASS}"
+  echo "PPPoE username: ${PPPOE_USER}"
+  echo "PPPoE password: ******"
 
   cat > /etc/ppp/peers/wan <<EOF
 plugin pppoe.so 
@@ -243,7 +238,7 @@ EOF
 
 ## === 模块 4：Dnsmasq === ##
 setup_dnsmasq() {
-  echo "正在配置 Dnsmasq..."
+  echo "start to setup Dnsmasq service..."
   echo "conf-dir=/etc/dnsmasq.d/,*.conf" > /etc/dnsmasq.conf
   mkdir /etc/dnsmasq.d/
   cat > /etc/dnsmasq.d/lan-dns.conf <<EOF
@@ -320,6 +315,7 @@ EOF
 
 ## === 模块 5：nftables 防火墙 + NAT + 端口转发 === ##
 setup_nftables() {
+  echo "start to setup nftables..."
   cat > /etc/nftables.conf <<EOF
 #!/usr/bin/nft -f
 
@@ -523,7 +519,6 @@ EOF
 
 ## === 模块 6：系统内核转发 === ##
 setup_sysctl() {
-  # echo -e "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/99-forwarding.conf
   cat > /etc/sysctl.d/99-router.conf <<EOF
 
 # 网络转发设置
@@ -576,9 +571,9 @@ EOF
   sysctl --system
 }
 
-## === 模块 7：Cockpit Web UI === ##
+## === 模块 7：dhcpcd 配置 === ##
 setup_dhcpcd() {
-  echo "正在配置 dhcpcd 服务..."
+  echo "start setup dhcpcd service..."
 
   # 配置 dhcpcd
   [[ -f /etc/dhcpcd.conf ]] && cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak
@@ -616,35 +611,35 @@ interface ${IFACE}
 
 EOF
   systemctl enable dhcpcd --now
-  echo "dhcpcd 服务已配置并启用。"
+  echo "finish setup dhcpcd service..."
 }
 
 # 安装 Arch Router #
 function do_install_archrouter() {
-    if ! prompt "是否安装 Arch Router ?" ; then
-        loginfo "安装已取消."
+    if ! prompt "Ready to install Arch Router ?" ; then
+        loginfo "Canceled!"
         return 1
     fi
     ###############################################
     # 参数动态设置 #
     ###############################################
     # 设置IFACE
-    echo "当前可用的网络设备名称如下："
+    echo "network interface list:"
     ip link show | awk -F': ' '/^[0-9]+: / {print $2}' | grep -v lo
-    read -p "请输入要设置的网络设备名称 (默认: ${default_iface}): " input_iface
+    read -p "select interface name(default: ${default_iface}): " input_iface
 
     IFACE=${input_iface:-${default_iface}}
-    loginfo "已设置网络设备名称为: ${IFACE}"
-    loginfo "当前 LAN IP 地址为: ${LAN_IP}"
-    loginfo "开始安装 Arch Router..."
-    prompt "[1/7] 安装基础软件包..."        && install_packages
-    prompt "[2/7] 配置 LAN 网络..."        && setup_networkd
-    prompt "[3/7] 设置 PPPoE 拨号..."      && setup_pppoe
-    prompt "[4/7] 启用 Dnsmasq..."         && setup_dnsmasq
-    prompt "[5/7] 配置 nftables 防火墙..."  && setup_nftables
-    prompt "[6/7] 启用内核转发..."          && setup_sysctl
-    prompt "[7/7] 启用Dhcpcd服务..."        && setup_dhcpcd
-    loginfo "✅ 部署完成！请接入 LAN 口测试上网与后台管理功能。"
+    loginfo "LAN interface: ${IFACE}"
+    loginfo "LAN IP: ${LAN_IP}"
+    loginfo "Start to install Arch Router..."
+    prompt "[1/7] install basic packages..."   && install_packages
+    prompt "[2/7] setup network..."            && setup_networkd
+    prompt "[3/7] setup PPPoE ..."             && setup_pppoe
+    prompt "[4/7] setup Dnsmasq..."            && setup_dnsmasq
+    prompt "[5/7] setup nftables firewall..."  && setup_nftables
+    prompt "[6/7] setup sysctl..."             && setup_sysctl
+    prompt "[7/7] setup dhcpcd..."             && setup_dhcpcd
+    loginfo "✅ Finish setup! "
 
     return 0
 }

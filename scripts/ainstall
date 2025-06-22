@@ -235,6 +235,7 @@ function partation_by_lvm() {
     echo "Finish to partation and mount"
 }
 
+# 挂载分区功能，仅当已经完成分区后使用，可用于修复grub等其他用途或安装失败时重新挂载分区
 function mount_partation() {
     # 列举所有可用磁盘
     disks=$(lsblk -d -n -p -o NAME,SIZE,TYPE | grep disk | awk '{print $1 " (" $2 ")"}'|$FZF)
@@ -251,15 +252,13 @@ function mount_partation() {
     mount --mkdir /dev/$vg_name/home /mnt/home
     mount --mkdir /dev/$vg_name/opt /mnt/opt
 
-
-    echo "generating fstab..."
-    genfstab -U -p /mnt >> /mnt/etc/fstab
-
 }
 
 # 01. 磁盘分区
 function disk_partation() {
     echo "Start partation..."
+    # 分区说明： GPT table + UEFI(bootloader) + LVM
+    echo "DISK partation: GPT table + UEFI(bootloader) + LVM"
     # 列举所有可用磁盘
     disks=$(lsblk -d -n -p -o NAME,SIZE,TYPE | grep disk | awk '{print $1 " (" $2 ")"}'|$FZF)
     if [ -z "$disks" ]; then
@@ -299,7 +298,8 @@ function install_basic_packages() {
         fi
     fi
     pacman -Syy
-    pacstrap -K /mnt base linux linux-firmware linux-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
+    # pacstrap -K /mnt base linux linux-firmware linux-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
+    pacstrap -K /mnt base linux-lts linux-firmware linux-lts-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
 
 }
 
@@ -332,6 +332,8 @@ function system_settings() {
         echo 'zh_CN.GB18030 GB18030' >> /etc/locale.gen
         echo 'zh_CN.GBK GBK' >> /etc/locale.gen
         locale-gen
+        echo "export LANG=zh_CN.UTF-8" >> /etc/profile
+        echo "export LC_ALL=zh_CN.UTF-8" >> /etc/profile
 
         echo 'change localtime to Asia/Shanghai'
         ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
@@ -369,10 +371,15 @@ function system_settings() {
     arch-chroot /mnt bash -c "systemctl enable NetworkManager"
     arch-chroot /mnt bash -c "systemctl enable sshd"
 
+    # 生成fstab
+    echo "generate /etc/fstab ..."
+    genfstab -U -p /mnt >> /mnt/etc/fstab
+ 
     echo "finish configuration."
 
     echo "umount /mnt"
     umount -R /mnt
+
 
     echo "Now you can reboot your system."
 
