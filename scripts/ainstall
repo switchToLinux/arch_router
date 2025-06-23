@@ -5,20 +5,18 @@
 # License: GPL3
 ##################################################
 
+# 脚本路径 #
+router_file=$0
 
+CURL="curl -C - "
+pac_cmd_ins="pacman -Sy --needed --noconfirm"
+FZF="fzf --height 40% --reverse --border --no-info --inline-info --prompt >>> "
 
 # 欢迎和再见提示信息
 WELCOME="^_^ Arch linux toolbox"
 SEE_YOU="^_^ Bye!"
 
-# 脚本路径 #
-router_file=$0
-
 ####################### PROMPT FUNCTION #######################
-
-CURL="curl -C - "  # 支持断点继续下载
-pac_cmd_ins="pacman -Sy --needed --noconfirm"
-FZF="fzf --height 40% --reverse --border --no-info --inline-info --prompt >>> "
 
 #### 默认选项 #####
 default_confirm="no"    # 是否显示提示确认，no-(默认)提示，yes-自动选择yes
@@ -32,19 +30,8 @@ NC='\e[0m' # No color
 BG='\e[7m' # Highlighting Background color
 TC='\e[1m' # Highlighting Text color
 
-########### 文字显示颜色输出函数 ######
-function echo_white()  { printf "\033[0;37m$@\033[0m"     ; }
-function echo_whiter() { printf "\033[0;37;7m$@\033[0m"   ; }
-function echo_red()    { printf "\033[0;31m$@\033[0m"     ; }
-function echo_redr()   { printf "\033[0;31;7m$@\033[0m"   ; }
-function echo_green()  { printf "\033[0;32m$@\033[0m"     ; }
 function echo_greenr() { printf "\033[0;32;7m$@\033[0m"   ; }
-function white_line()  { printf "\033[0;37m$@\033[0m\n"   ; }
-function whiter_line() { printf "\033[0;37;7m$@\033[0m\n" ; }
-function red_line()    { printf "\033[0;31;1m$@\033[0m\n" ; }
 function redr_line()   { printf "\033[0;31;7m$@\033[0m\n" ; }
-function green_line()  { printf "\033[0;32;1m$@\033[0m\n" ; }
-function greenr_line() { printf "\033[0;32;7m$@\033[0m\n" ; }
 
 item_index=0        # 记录菜单选项序号
 item_line_count=3   # 每行显示菜单数量
@@ -100,8 +87,6 @@ function check_term() {
         export TERM=xterm
         export COLORTERM=truecolor
     fi
-    # menu_iteml "TERM终端类型:" "$TERM"
-    # menu_iteml "TERM终端色彩:" "$COLORTERM"
 }
 
 # 基础依赖命令检测与运行环境 #
@@ -402,6 +387,64 @@ function reinstall_grub() {
         echo "please set BIOS to boot from UEFI mode!"
     fi
 }
+###############################
+#   显卡驱动
+###############################
+function download_nvidia_driver() {
+    loginfo "Start to download_nvidia_driver"
+    prompt "ready to download nvidia driver" || return 1
+    command -v jq >/dev/null || sudo $pac_cmd_ins jq
+    ! command -v jq >/dev/null && logerr "please install jq command first!" && return 1
+
+    tmp_json=/tmp/tmp.nvidia.menu.json
+    # 下载链接(以 NVIDIA GeForce GTX 1660 SUPER 显卡为例,驱动兼容大部分 GeForce系列)
+    dn_url='https://gfwsl.geforce.cn/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&psid=112&pfid=910&osID=12&languageCode=2052&beta=null&isWHQL=0&dltype=-1&dch=0&upCRD=null&qnf=0&sort1=0&numberOfResults=10'
+    
+    # 检查文件最后修改时间是否为 15天内 , 是就不重复下载，否则就下载新的json文件
+    old_json_file=`find $tmp_json  -type f -mtime -15 2>/dev/null`
+    if [ "$old_json_file" = "" ] ; then
+        ${CURL} -o $tmp_json $dn_url \
+            -H 'authority: gfwsl.geforce.cn' \
+            -H 'accept: */*' \
+            -H 'accept-language: zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7' \
+            -H 'cache-control: no-cache' \
+            -H 'dnt: 1' \
+            -H 'origin: https://www.nvidia.cn' \
+            -H 'pragma: no-cache' \
+            -H 'referer: https://www.nvidia.cn/' \
+            -H 'sec-ch-ua: "Google Chrome";v="111", "Not(A:Brand";v="8", "Chromium";v="111"' \
+            -H 'sec-ch-ua-mobile: ?0' \
+            -H 'sec-ch-ua-platform: "Linux"' \
+            -H 'sec-fetch-dest: empty' \
+            -H 'sec-fetch-mode: cors' \
+            -H 'sec-fetch-site: cross-site' \
+            -H 'user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36' \
+            --compressed
+        [[ "$?" != "0" ]] && logerr "failed to get nvidia driver package list!" && return 1
+    fi
+    file_url=`cat $tmp_json |jq |awk '/DownloadURL/{ print $2 }' | sed -n 's/[",]//g; 1p'`
+    file_size=`cat $tmp_json |jq |awk '/DownloadURL/{ print $2 }' | sed -n 's/[",]//g; 2p'`
+    loginfo "download url: $file_url , file size: $file_size MB"
+    tmp_file="/tmp/`basename $file_url`"
+
+    if [ -f "$tmp_file" ] ; then
+        echo -e "${RED}Tips: ${tmp_file} is already downloaded !${NC}"
+    fi
+    prompt "Download nvidia driver package(file size: $file_size )" && ! ${CURL} -o $tmp_file -SL $file_url && logerr "Download nvidia driver failed!" && return 2
+
+    loginfo "nvidia driver: $tmp_file ."
+    sh ${tmp_file}
+    loginfo "finish download_nvidia_driver."
+}
+
+# 自动安装Arch Linux
+function auto_install_arch() {
+    default_confirm="yes"
+    disk_partation || return 1
+    install_basic_packages || return 2
+    system_settings || return 3
+}
+
 ######## MAIN:PROCESS ###################
 
 
@@ -416,6 +459,7 @@ function show_menu_main() {
     menu_item r reboot system
     menu_item m mount partation
     menu_item g grub2 reinstall
+    menu_item n install nvidia driver
     menu_tail
 
     menu_item u Update
@@ -427,21 +471,18 @@ function start_main(){
     while true
     do
         show_menu_main
-        read -r -n 1 -e  -p "`echo_greenr`${PMT} " str_answer
+        read -r -n 1 -e  -p "`echo_greenr choice` ${PMT} " str_answer
         case "$str_answer" in
             0) auto_install_arch       ;;
             1) disk_partation          ;;
             2) install_basic_packages  ;;
             3) system_settings         ;;
-            r) reboot                  ;;
-            
-            m) mount_partation         ;;
             g) reinstall_grub          ;;
-            u)
-                update_repo
-                exit 0
-            ;;
-            q|"") return 0         ;;  # 返回上级菜单
+            n) download_nvidia_driver  ;;
+            m) mount_partation         ;;
+            r) reboot                  ;;
+            u) update_repo ; exit 0    ;;
+            q|"") return 0             ;;
             *) redr_line "no such choice [$str_answer]!" ;;
         esac
     done

@@ -8,17 +8,17 @@
 ####################################################
 
 
-# 欢迎和再见提示信息
-WELCOME="arch router script for single network interface"
-SEE_YOU="Bye!"
-
 # 脚本路径 #
 router_file=$0
 
-####################### PROMPT FUNCTION #######################
-
 CURL="curl -C - "  # 支持断点继续下载
 pac_cmd_ins="pacman -Sy --needed --noconfirm"
+
+# 欢迎和再见提示信息
+WELCOME="arch router for single interface"
+SEE_YOU="Bye!"
+
+####################### PROMPT FUNCTION #######################
 
 #### 默认选项 #####
 default_confirm="no"    # 是否显示提示确认，no-(默认)提示，yes-自动选择yes
@@ -32,19 +32,8 @@ NC='\e[0m' # No color
 BG='\e[7m' # Highlighting Background color
 TC='\e[1m' # Highlighting Text color
 
-########### 文字显示颜色输出函数 ######
-function echo_white()  { printf "\033[0;37m$@\033[0m"     ; }
-function echo_whiter() { printf "\033[0;37;7m$@\033[0m"   ; }
-function echo_red()    { printf "\033[0;31m$@\033[0m"     ; }
-function echo_redr()   { printf "\033[0;31;7m$@\033[0m"   ; }
-function echo_green()  { printf "\033[0;32m$@\033[0m"     ; }
 function echo_greenr() { printf "\033[0;32;7m$@\033[0m"   ; }
-function white_line()  { printf "\033[0;37m$@\033[0m\n"   ; }
-function whiter_line() { printf "\033[0;37;7m$@\033[0m\n" ; }
-function red_line()    { printf "\033[0;31;1m$@\033[0m\n" ; }
 function redr_line()   { printf "\033[0;31;7m$@\033[0m\n" ; }
-function green_line()  { printf "\033[0;32;1m$@\033[0m\n" ; }
-function greenr_line() { printf "\033[0;32;7m$@\033[0m\n" ; }
 
 item_index=0        # 记录菜单选项序号
 item_line_count=3   # 每行显示菜单数量
@@ -100,8 +89,6 @@ function check_term() {
         export TERM=xterm
         export COLORTERM=truecolor
     fi
-    # menu_iteml "TERM终端类型:" "$TERM"
-    # menu_iteml "TERM终端色彩:" "$COLORTERM"
 }
 
 # 基础依赖命令检测与运行环境 #
@@ -126,8 +113,6 @@ function prompt() {
             y*|Y*)  echo "Confirmed" ; return 0 ;;
             *)      echo "Canceled" ; return 1 ;;
         esac
-    else
-        echo "$msg (已默认选择 Yes)"
     fi
     return 0
 }
@@ -239,12 +224,10 @@ EOF
 ## === 模块 4：Dnsmasq === ##
 setup_dnsmasq() {
   echo "start to setup Dnsmasq service..."
-  echo "conf-dir=/etc/dnsmasq.d/,*.conf" > /etc/dnsmasq.conf
+  echo "\n# 加载自定义配置 #" > /etc/dnsmasq.conf
+  echo 'conf-dir=/etc/dnsmasq.d/,*.conf' >> /etc/dnsmasq.conf
   mkdir /etc/dnsmasq.d/
   cat > /etc/dnsmasq.d/lan-dns.conf <<EOF
-
-# 关闭 DNS 服务#
-#port=0
 
 # 不使用 /etc/resolv.conf #
 no-resolv
@@ -255,7 +238,6 @@ expand-hosts
 # 国内 DNS 服务器
 server=223.5.5.5
 server=114.114.114.114
-server=2402:4e00::
 
 
 EOF
@@ -304,7 +286,7 @@ EOF
 # 启用 DHCP 日志记录
 log-dhcp
 # 启用 DNS 日志记录
-log-queries
+# log-queries
 
 log-facility=/var/log/dnsmasq.log
 
@@ -600,13 +582,12 @@ nohook resolv.conf
 interface $WAN_IF
     ipv6rs
     ia_na 1
-    ia_pd 1 ${IFACE}/0
+    ia_pd 2 ${IFACE}/0
 
 # 内网接口使用从 PPPoE 获得的 IPv6 地址
 
 interface ${IFACE}
     noipv6rs           # 不去收 RA
-    noia_na            # 不请求地址
     nohook slaac       # 不用 SLAAC 自动生成地址
 
 EOF
@@ -615,11 +596,9 @@ EOF
 }
 
 # 安装 Arch Router #
-function do_install_archrouter() {
-    if ! prompt "Ready to install Arch Router ?" ; then
-        loginfo "Canceled!"
-        return 1
-    fi
+function install_archrouter() {
+    prompt "Ready to install Arch Router ?" || return 0
+
     ###############################################
     # 参数动态设置 #
     ###############################################
@@ -657,8 +636,8 @@ function pppoe_start() {
     # 循环检测7次，每次间隔1秒
     i=0
     while [ $i -lt 7 ]; do
-        ip a s | grep $WAN_IF  &> /dev/null
-        if [ $? -eq 0 ]; then
+        ip a s $WAN_IF &> /dev/null
+        if [ "$?" -eq 0 ]; then
             echo "PPPoE connected."
             break
         fi
@@ -666,8 +645,7 @@ function pppoe_start() {
         sleep 1
         i=$((i+1))
     done
-    # 检测公网IP是否正常获取
-    ip a s | grep $WAN_IF | grep "scope global"
+    ip a s $WAN_IF 2>/dev/null | grep "scope global"
     if [ $? -eq 0 ]; then
         echo "PPPoE connected."
     else
@@ -695,6 +673,31 @@ function pppoe_restart() {
     echo "PPPoE restarted."
 }
 
+function disable_ipv6() {
+  echo "Disable ipv6 support ..."
+  # dhcpcd 禁止IPv6获取
+  sed -i 's/^\+ipv6/#+ipv6/g' /etc/ppp/peers/wan
+
+  # 禁止 dnsmasq 支持IPv6 RA广播 #
+  [[ -f /etc/dnsmasq.d/ipv6.conf ]] && mv /etc/dnsmasq.d/ipv6.conf /etc/dnsmasq.d/ipv6.conf.bak
+
+  # 服务重启
+  systemctl disable --now dhcpcd
+  systemctl restart systemd-networkd dnsmasq
+
+}
+
+function enable_ipv6() {
+  echo "Enable ipv6 support ..."
+  sed -i 's/^#+ipv6/+ipv6/g' /etc/ppp/peers/wan
+
+  # 启用 dnsmasq 支持IPv6 RA广播 #
+  [[ -f /etc/dnsmasq.d/ipv6.conf.bak ]] && mv /etc/dnsmasq.d/ipv6 /etc/dnsmasq.d/ipv6.conf
+
+  # 服务重启 #
+  systemctl restart systemd-networkd dnsmasq
+  systemctl enable --now dhcpcd
+}
 
 
 
@@ -723,10 +726,12 @@ function update_repo() {
 # 主菜单显示 #
 function show_menu_main() {
     menu_head "$WELCOME"
-    menu_item 0 install arch router
+    menu_item 0 install ArchRouter
     menu_item 1 start router
     menu_item 2 stop  router
     menu_item 3 restart router
+    menu_item 4 disable IPv6
+    menu_item 5 enable  IPv6
     menu_tail
 
     menu_item u Update
@@ -740,10 +745,12 @@ function start_main(){
         show_menu_main
         read -r -n 1 -e  -p "`echo_greenr 请选择:`${PMT} " str_answer
         case "$str_answer" in
-            0) do_install_archrouter   ;;  # 终端命令安装
+            0) install_archrouter      ;;  # 终端命令安装
             1) pppoe_start             ;;  # 启动 PPPoE 服务
             2) pppoe_stop              ;;  # 停止 PPPoE 服务
             3) pppoe_restart           ;;  # 重启 PPPoE 服务
+            4) disable_ipv6            ;;  # 禁用IPv6
+            5) enable_ipv6             ;;  # 启用IPv6
             u)
                 update_repo
                 exit 0
