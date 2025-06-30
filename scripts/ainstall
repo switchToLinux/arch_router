@@ -445,23 +445,49 @@ function auto_install_arch() {
     system_settings || return 3
 }
 
+###############################
+#    Desktop Install(桌面安装)
+###############################
+function install_i3wm() {
+    # download i3config scripts
+    tmp_file=/tmp/i3config
+    str_url="https://pushx.link/s/i3config"
+    prompt "Download i3config script" && ! ${CURL} -o ${tmp_file} ${str_url} && logerr "Download i3config script failed!" && return 1
+
+    mv $tmp_file /usr/local/bin/i3config
+    i3config
+}
+
+function install_hyprland() {
+    tmp_file=/tmp/wconfig
+    str_url="https://pushx.link/s/wconfig"
+    prompt "Download wconfig script" && ! ${CURL} -o ${tmp_file} ${str_url} && logerr "Download wconfig script failed!" && return 1
+    mv $tmp_file /usr/local/bin/wconfig
+    wconfig
+}
+
+
 ######## MAIN:PROCESS ###################
 
 
 # 主菜单显示 #
 function show_menu_main() {
     menu_head "$WELCOME"
-    menu_item 0 auto install arch linux
+    menu_item 0 auto install ArchLinux
     menu_item 1 disk partations
-    menu_item 2 basic install
+    menu_item 2 install basic packages
     menu_item 3 system settings
     menu_tail
-    menu_item r reboot system
-    menu_item m mount partation
     menu_item g grub2 reinstall
+    menu_item m mount partation
     menu_item n install nvidia driver
+
+    menu_head "Desktop Install"
+    menu_item i install i3WM
+    menu_item w install Hyprland
     menu_tail
 
+    menu_item r reboot system
     menu_item u Update
     menu_item q Quit
     menu_tail
@@ -477,12 +503,16 @@ function start_main(){
             1) disk_partation          ;;
             2) install_basic_packages  ;;
             3) system_settings         ;;
+
             g) reinstall_grub          ;;
+            i) install_i3wm            ;;
             n) download_nvidia_driver  ;;
             m) mount_partation         ;;
+            q|"") return 0             ;;
             r) reboot                  ;;
             u) update_repo ; exit 0    ;;
-            q|"") return 0             ;;
+            w) install_hyprland        ;;
+
             *) redr_line "no such choice [$str_answer]!" ;;
         esac
     done
