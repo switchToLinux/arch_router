@@ -9,7 +9,7 @@
 router_file=$0
 
 CURL="curl -C - "
-pac_cmd_ins="pacman -Sy --needed --noconfirm"
+pac_cmd_ins="pacman -Sy --noconfirm --needed"
 FZF="fzf --height 40% --reverse --border --no-info --inline-info --prompt >>> "
 
 # 欢迎和再见提示信息
@@ -66,7 +66,7 @@ function center_line() {
   printf "| %*s${BRB}%s${NC}" "$left_padding" "" "$text" ; tput hpa $width ; printf "|\n"
 }
 
-function menu_head() { print_feed;   center_line "$@" ; print_feed; }
+function menu_head() { center_line "$@" ; print_feed; }
 # 一行可以有 item_line_count 个菜单选项
 function menu_item() { let item_index=$item_index+1 ; n=$1 ; shift ; let rlen="$item_index * ($ILEN + 1)" ; echo -en "|  $BG ${n} $NC $@" ; tput hpa $rlen ; [[ "$item_index" == "$item_line_count" ]] && echo "|" && item_index=0 ; }
 # 输出单行长菜单选项,长度有限制
@@ -108,6 +108,13 @@ function check_basic() {
     fi
 }
 
+function check_mounted() {
+    if ! mountpoint -q /mnt ; then
+        echo "not found /mnt, please mount /mnt first."
+        return 1
+    fi
+}
+
 
 ################################################################
 # 提示确认函数，如果使用 -y 参数默认为Y确认
@@ -138,6 +145,7 @@ function prompt_sizes() {
         echo "No more free space!"
         return 1
     fi
+    local free_gb=$total_gb
     echo "Disk free space: ${total_gb}G"
 
     # 默认分区建议
@@ -146,11 +154,13 @@ function prompt_sizes() {
     local default_opt=20
 
     # 交互输入分区大小
-    read -p "set /(root) size(GB, default:${default_root}): " root_size
+    read -p "set /(root) size(GB, default:${default_root}, free:${free_gb}): " root_size
     root_size=${root_size:-$default_root}
-    read -p "set /home size(GB, default:${default_home}): " home_size
+    free_gb=$((free_gb - root_size))
+    read -p "set /home size(GB, default:${default_home}, free:${free_gb}): " home_size
     home_size=${home_size:-$default_home}
-    read -p "set /opt size(GB, default:${default_opt}): " opt_size
+    free_gb=$((free_gb - home_size))
+    read -p "set /opt size(GB, default:${default_opt}, free:${free_gb}): " opt_size
     opt_size=${opt_size:-$default_opt}
 
     # 校验总和
@@ -231,12 +241,54 @@ function mount_partation() {
     DISK=$(echo "$disks" | awk '{print $1}')
 
     vg_name="sys"
+    # 检测 VG 组是否存在
+    if ! vgs ${vg_name} &>/dev/null ; then
+        echo "VG ${vg_name} not exist! you need create it first!"
+        return 1
+    fi
+    echo "Mounting partitions for VG: $vg_name"
     # 挂载分区
     mount --mkdir /dev/$vg_name/root /mnt
     mount --mkdir ${DISK}1 /mnt/boot
     mount --mkdir /dev/$vg_name/home /mnt/home
     mount --mkdir /dev/$vg_name/opt /mnt/opt
+    echo "Partitions mounted finished."
+}
 
+# 更新软件源(加速软件更新)#
+function mirror_select() {
+    mirror_file=/etc/pacman.d/mirrorlist
+
+    if grep '^Server' $mirror_file &>/dev/null ; then
+        echo -n "current mirror: "
+        grep '^Server' $mirror_file
+    fi
+
+    prompt "change mirror ?"
+    if [ "$?" == "0" ] ; then
+        # 更换软件源国内清华源
+        echo "updating mirrorlist..."
+        pacman -Sy --noconfirm --needed pacman-mirrorlist
+
+        if [ ! -f "$mirror_file" ] ; then
+            mkdir -p $(dirname $mirror_file)
+            echo 'Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' > $mirror_file
+            return 0
+        fi
+
+        selected_mirror=$(grep 'Server' $mirror_file | grep 'https://' | sed 's/#//g' | $FZF)
+        echo -e "selected mirror: ${RED}$selected_mirror${NC}"
+        echo
+        if [ -z "$selected_mirror" ] ; then
+            echo "no mirror selected, exit."
+            return 1
+        fi
+
+        cp $mirror_file ${mirror_file}.bak.$(date +%Y%m%d%H%M)
+        sed -i "s/^Server/#Server/g" $mirror_file
+        sed -i "s|#${selected_mirror}|${selected_mirror}|g" $mirror_file
+        echo "mirrorlist updated done."
+    fi
 }
 
 # 01. 磁盘分区
@@ -267,21 +319,15 @@ function disk_partation() {
 
 # 02. 基础安装 # 安装环境准备 #
 function install_basic_packages() {
+    # 检查磁盘分区是否已经挂载完成
+    check_mounted || return 1
+
     # 安装基础软件包
     echo "installing base packages..."
-    prompt "change mirror to tsinghua mirror?"
-    if [ "$?" == "0" ] ; then
-        # 更换软件源国内清华源
-        echo "updating mirrorlist..."
-        pacman -Sy pacman-mirrorlist --noconfirm
+    
+    # 更新软件源#
+    mirror_select
 
-        if grep 'tsinghua' /etc/pacman.d/mirrorlist; then
-            echo "mirrorlist already updated."
-        else
-            cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak
-            echo 'Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-        fi
-    fi
     pacman -Syy
     # pacstrap -K /mnt base linux linux-firmware linux-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
     pacstrap -K /mnt base linux-lts linux-firmware linux-lts-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
@@ -331,10 +377,13 @@ function system_settings() {
         mkinitcpio -P
 
         echo 'install grub packages'
-        pacman -Sy --noconfirm grub-efi-x86_64 efibootmgr os-prober
+        pacman -Sy --noconfirm --needed grub-efi-x86_64 efibootmgr os-prober
 
         echo 'add lvm2 to grub'
         sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
+
+        echo "enable os-prober for grub"
+        sed -i 's/^.*GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/g' /etc/default/grub
 
         echo 'install grub to EFI'
         grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
@@ -370,19 +419,30 @@ function system_settings() {
 
 }
 
-
 function reinstall_grub() {
-    # 自动检测UEFI或BIOS启动，并选择合适的GRUB安装方式
     # 自动检测已挂载的磁盘（假设/boot/efi或/boot已挂载，或用上次分区的DISK变量）
+    check_mounted || return 1
 
     if [ -d /sys/firmware/efi ]; then
         echo "UEFI mode:"
         arch-chroot /mnt bash -c "
-            pacman -Sy --noconfirm grub-efi-x86_64 efibootmgr os-prober
+            echo 'install grub packages'
+            pacman -Sy --noconfirm --needed grub-efi-x86_64 efibootmgr os-prober
+
+            echo 'add lvm2 to grub'
             sed -i 's/part_gpt part_msdos/part_gpt lvm2 part_msdos/g' /etc/default/grub
+
+            echo "enable os-prober for grub"
+            sed -i 's/^.*GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/g' /etc/default/grub
+
+            echo 'install grub to EFI'
             grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=arch_linux --recheck
+
+            echo 'generate grub.cfg'
             grub-mkconfig -o /boot/grub/grub.cfg
+
         "
+        echo "finish reinstall grub."
     else
         echo "please set BIOS to boot from UEFI mode!"
     fi
@@ -466,7 +526,93 @@ function install_hyprland() {
     wconfig
 }
 
+function install_gnome() {
+    prompt "install GNOME Desktop" || return 1
 
+    sudo pacman -Syu --noconfirm --needed
+    sudo pacman -Sy --noconfirm --needed gnome gnome-extra gdm gnome-tweaks
+    sudo systemctl enable --now gdm.service
+    systemctl is-enabled lightdm && sudo systemctl disable lightdm
+    systemctl is-enabled sddm && sudo systemctl disable sddm
+}
+
+function install_kde() {
+    prompt "install KDE Plasma Desktop" || return 1
+    sudo pacman -Syu --noconfirm --needed
+    sudo pacman -Sy --noconfirm --needed plasma kde-applications sddm
+    sudo systemctl enable --now sddm.service
+    systemctl is-enabled lightdm && sudo systemctl disable lightdm
+    systemctl is-enabled gdm && sudo systemctl disable gdm
+}
+
+function install_Budgie() {
+    prompt "install Budgie Desktop" || return 1
+
+    sudo pacman -Syu --noconfirm --needed
+    sudo pacman -Sy --noconfirm --needed budgie lightdm lightdm-gtk-greeter
+    sudo pacman -Sy --noconfirm --needed arc-gtk-theme papirus-icon-theme network-manager-applet
+    sudo systemctl enable --now lightdm.service
+    systemctl is-enabled gdm && sudo systemctl disable gdm
+    systemctl is-enabled sddm && sudo systemctl disable sddm
+}
+
+###############################################
+#####  Display managers 安装函数 #####
+###############################################
+
+function install_lightdm() {
+    prompt "install lightdm" || return 1
+    sudo pacman -Sy --noconfirm --needed lightdm lightdm-slick-greeter
+    sudo systemctl enable --now lightdm.service
+}
+
+function install_sddm() {
+    prompt "install sddm" || return 1
+    sudo pacman -Sy --noconfirm --needed sddm
+    sudo systemctl enable --now sddm.service
+}
+
+
+function show_desktop_menu() {
+    menu_tail
+    menu_head "Display Manager"
+    menu_item 1 lightDM
+    menu_item 2 SDDM
+    menu_tail
+    menu_head "Windows Manager(WM)"
+    menu_item g GNOME
+    menu_item k KDE Plasma
+    menu_item b Budgie
+    menu_tail
+    menu_head "Tiling Windows Manager"
+    menu_item i "i3WM(i3config)"
+    menu_item w "Hyprland(wconfig)"
+    menu_tail
+
+    menu_item q Quit
+    menu_tail
+}
+
+
+function start_install_desktop() {
+    while true
+    do
+        show_desktop_menu
+        read -r -n 1 -e  -p "`echo_greenr choice` ${PMT} " str_answer
+        case "$str_answer" in
+            1) install_lightdm ;;
+            2) install_sddm ;;
+
+            g) install_gnome ;;
+            k) install_kde ;;
+            b) install_Budgie ;;
+            i) install_i3wm ;;
+            w) install_hyprland ;;
+            q|"") return 0 ;;
+            *) redr_line "no such choice [$str_answer]!" ;;
+        esac
+    done
+}
 ######## MAIN:PROCESS ###################
 
 
@@ -474,21 +620,23 @@ function install_hyprland() {
 function show_menu_main() {
     menu_head "$WELCOME"
     menu_item 0 auto install ArchLinux
+    menu_tail
+    
+    menu_head "Install Manually"
     menu_item 1 disk partations
     menu_item 2 install basic packages
     menu_item 3 system settings
     menu_tail
+    
+    menu_item d Desktop Install
+    menu_item s select mirror
     menu_item g grub2 reinstall
     menu_item m mount partation
     menu_item n install nvidia driver
-
-    menu_head "Desktop Install"
-    menu_item i install i3WM
-    menu_item w install Hyprland
     menu_tail
 
     menu_item r reboot system
-    menu_item u Update
+    menu_item u Update ainstall
     menu_item q Quit
     menu_tail
 }
@@ -504,14 +652,14 @@ function start_main(){
             2) install_basic_packages  ;;
             3) system_settings         ;;
 
+            d) start_install_desktop   ;;
             g) reinstall_grub          ;;
-            i) install_i3wm            ;;
             n) download_nvidia_driver  ;;
             m) mount_partation         ;;
             q|"") return 0             ;;
             r) reboot                  ;;
+            s) mirror_select           ;;
             u) update_repo ; exit 0    ;;
-            w) install_hyprland        ;;
 
             *) redr_line "no such choice [$str_answer]!" ;;
         esac
