@@ -293,7 +293,7 @@ function mirror_select() {
 
 # 01. 磁盘分区
 function disk_partation() {
-    echo "Start partation..."
+    prompt "Start partation..." || return 1
     # 分区说明： GPT table + UEFI(bootloader) + LVM
     echo "DISK partation: GPT table + UEFI(bootloader) + LVM"
     # 列举所有可用磁盘
@@ -323,20 +323,19 @@ function install_basic_packages() {
     check_mounted || return 1
 
     # 安装基础软件包
-    echo "installing base packages..."
+    prompt "installing base packages..." || return 1
     
     # 更新软件源#
     mirror_select
 
-    pacman -Syy
-    # pacstrap -K /mnt base linux linux-firmware linux-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
+    pacman -Syy --noconfirm --needed
     pacstrap -K /mnt base linux-lts linux-firmware linux-lts-headers vim sudo shadow lvm2 zsh networkmanager openssh  man-db man-pages texinfo  intel-ucode sof-firmware binutils git curl wget fzf plocate
 
 }
 
 # 03. 系统设置 #
 function system_settings() {
-    echo "start to system settings..."
+    prompt "start to system settings..." || return 1
 
     read -s -p "root password: " new_password
     echo
@@ -423,6 +422,8 @@ function reinstall_grub() {
     # 自动检测已挂载的磁盘（假设/boot/efi或/boot已挂载，或用上次分区的DISK变量）
     check_mounted || return 1
 
+    prompt "install grub..." || return 1
+
     if [ -d /sys/firmware/efi ]; then
         echo "UEFI mode:"
         arch-chroot /mnt bash -c "
@@ -451,7 +452,6 @@ function reinstall_grub() {
 #   显卡驱动
 ###############################
 function download_nvidia_driver() {
-    loginfo "Start to download_nvidia_driver"
     prompt "ready to download nvidia driver" || return 1
     command -v jq >/dev/null || sudo $pac_cmd_ins jq
     ! command -v jq >/dev/null && logerr "please install jq command first!" && return 1
@@ -499,6 +499,8 @@ function download_nvidia_driver() {
 
 # 自动安装Arch Linux
 function auto_install_arch() {
+    prompt "install arch linux" || return 1
+
     default_confirm="yes"
     disk_partation || return 1
     install_basic_packages || return 2
@@ -509,7 +511,7 @@ function auto_install_arch() {
 #    Desktop Install(桌面安装)
 ###############################
 function install_i3wm() {
-    # download i3config scripts
+    prompt "install i3wm script: i3config" || return 1
     tmp_file=/tmp/i3config
     str_url="https://pushx.link/s/i3config"
     prompt "Download i3config script" && ! ${CURL} -o ${tmp_file} ${str_url} && logerr "Download i3config script failed!" && return 1
@@ -519,6 +521,7 @@ function install_i3wm() {
 }
 
 function install_hyprland() {
+    prompt "install hyprland script: wconfig" || return 1
     tmp_file=/tmp/wconfig
     str_url="https://pushx.link/s/wconfig"
     prompt "Download wconfig script" && ! ${CURL} -o ${tmp_file} ${str_url} && logerr "Download wconfig script failed!" && return 1
@@ -560,24 +563,8 @@ function install_Budgie() {
 #####  Display managers 安装函数 #####
 ###############################################
 
-function install_lightdm() {
-    prompt "install lightdm" || return 1
-    sudo pacman -Sy --noconfirm --needed lightdm lightdm-slick-greeter
-    sudo systemctl enable --now lightdm.service
-}
-
-function install_sddm() {
-    prompt "install sddm" || return 1
-    sudo pacman -Sy --noconfirm --needed sddm
-    sudo systemctl enable --now sddm.service
-}
-
-
 function show_desktop_menu() {
-    menu_tail
-    menu_head "Display Manager"
-    menu_item 1 lightDM
-    menu_item 2 SDDM
+
     menu_tail
     menu_head "Windows Manager(WM)"
     menu_item g GNOME
@@ -600,8 +587,6 @@ function start_install_desktop() {
         show_desktop_menu
         read -r -n 1 -e  -p "`echo_greenr choice` ${PMT} " str_answer
         case "$str_answer" in
-            1) install_lightdm ;;
-            2) install_sddm ;;
 
             g) install_gnome ;;
             k) install_kde ;;
@@ -618,6 +603,7 @@ function start_install_desktop() {
 
 # 主菜单显示 #
 function show_menu_main() {
+    menu_tail
     menu_head "$WELCOME"
     menu_item 0 auto install ArchLinux
     menu_tail
